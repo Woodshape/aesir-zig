@@ -86,14 +86,20 @@ pub const GameState = struct {
 
     pub fn createEntity(self: *GameState, kind: Entity.Kind) *Entity {
         var index: i32 = -1;
-        if (self.entity_free_list.items.len > 0) {
-            index = self.entity_free_list.pop().?;
-        }
 
-        if (index == -1) {
-            std.debug.assert(self.entity_top_count + 1 < MAX_ENTITIES);
-            self.entity_top_count += 1;
-            index = self.entity_top_count;
+        // Reserve index 0 for the player entity.
+        if (kind == .player) {
+            index = 0;
+        } else {
+            if (self.entity_free_list.items.len > 0) {
+                index = self.entity_free_list.pop().?;
+            }
+
+            if (index == -1) {
+                std.debug.assert(self.entity_top_count + 1 < MAX_ENTITIES);
+                self.entity_top_count += 1;
+                index = self.entity_top_count;
+            }
         }
 
         const idx: usize = @intCast(index);
@@ -122,7 +128,7 @@ pub const GameState = struct {
     }
 
     pub fn entityFromHandle(self: *GameState, handle: EntityHandle) ?*Entity {
-        if (handle.index <= 0 or handle.index > self.entity_top_count) {
+        if (handle.index < 0 or handle.index > self.entity_top_count) {
             return null;
         }
 
@@ -164,11 +170,13 @@ test "entity create" {
 
     const ent = state.createEntity(.{ .player = .{ .jump_force = 600 } });
 
-    try std.testing.expectEqual(@as(i32, 1), ent.handle.index);
+    try std.testing.expectEqual(.player, std.meta.activeTag(state.entities[0].kind));
+    try std.testing.expectEqual(.none, std.meta.activeTag(state.entities[1].kind));
+
+    try std.testing.expectEqual(@as(i32, 0), ent.handle.index);
     try std.testing.expectEqual(@as(i32, 1), ent.handle.id);
     try std.testing.expectEqual(ent.handle, state.player_handle);
-    try std.testing.expectEqual(false, state.entities[0].allocated);
-    try std.testing.expectEqual(true, state.entities[1].allocated);
+    try std.testing.expectEqual(true, state.entities[0].allocated);
     try std.testing.expectEqual(@as(usize, 0), state.entity_free_list.items.len);
     try std.testing.expect(state.latest_entity_id >= 1);
 
