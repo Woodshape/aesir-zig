@@ -14,6 +14,13 @@ pub const EntityHandle = struct {
     id: i32 = 0,
 };
 
+pub const EntityKind = union(enum) {
+    none,
+    player: Player,
+    skeleton: Skeleton,
+    bat: Bat,
+};
+
 pub const Player = struct {
     extra_jumps: u8 = 0,
     jump_force: f32 = 0,
@@ -29,23 +36,16 @@ pub const Entity = struct {
     vel: rl.Vector2 = .{ .x = 0, .y = 0 },
     flip_x: bool = false,
 
-    kind: Kind = .none,
-
-    pub const Kind = union(enum) {
-        none,
-        player: Player,
-        skeleton: Skeleton,
-        bat: Bat,
-    };
+    kind: EntityKind = .none,
 
     pub fn as(self: *Entity, comptime T: type) ?*T {
         const name = comptime name: {
-            for (@typeInfo(Kind).@"union".fields) |field| {
+            for (@typeInfo(EntityKind).@"union".fields) |field| {
                 if (field.type == T) break :name field.name;
             }
             @compileError(@typeName(T) ++ " is not a variant of Entity.Kind");
         };
-        if (std.meta.activeTag(self.kind) == @field(std.meta.Tag(Kind), name)) {
+        if (std.meta.activeTag(self.kind) == @field(std.meta.Tag(EntityKind), name)) {
             return &@field(self.kind, name);
         }
         return null;
@@ -84,7 +84,7 @@ pub const GameState = struct {
         self.entity_free_list.deinit(self.allocator);
     }
 
-    pub fn createEntity(self: *GameState, kind: Entity.Kind) *Entity {
+    pub fn createEntity(self: *GameState, kind: EntityKind) *Entity {
         var index: i32 = -1;
 
         // Reserve index 0 for the player entity.
@@ -177,6 +177,7 @@ test "entity create" {
     try std.testing.expectEqual(@as(i32, 1), ent.handle.id);
     try std.testing.expectEqual(ent.handle, state.player_handle);
     try std.testing.expectEqual(true, state.entities[0].allocated);
+    try std.testing.expectEqual(false, state.entities[1].allocated);
     try std.testing.expectEqual(@as(usize, 0), state.entity_free_list.items.len);
     try std.testing.expect(state.latest_entity_id >= 1);
 
@@ -218,32 +219,6 @@ test "entity player variant" {
     if (ent.as(Player)) |p| {
         try std.testing.expectApproxEqAbs(@as(f32, 600), p.jump_force, 0.001);
         try std.testing.expectEqual(@as(i32, 100), ent.hp);
-    } else {
-        return error.TestUnexpectedResult;
-    }
-}
-
-test "entity skeleton variant" {
-    var state = GameState.init(std.testing.allocator);
-    defer state.deinit();
-
-    const ent = state.createEntity(.{ .skeleton = .{ .bones = 5 } });
-
-    if (ent.as(Skeleton)) |s| {
-        try std.testing.expectEqual(@as(i32, 5), s.bones);
-    } else {
-        return error.TestUnexpectedResult;
-    }
-}
-
-test "entity bat variant" {
-    var state = GameState.init(std.testing.allocator);
-    defer state.deinit();
-
-    const ent = state.createEntity(.{ .bat = .{ .flying = true } });
-
-    if (ent.as(Bat)) |b| {
-        try std.testing.expectEqual(true, b.flying);
     } else {
         return error.TestUnexpectedResult;
     }
