@@ -5,6 +5,13 @@ pub const WeaponType = enum {
     sword,
     bow,
     staff,
+    spear,
+};
+
+pub const AttackAnimationType = enum {
+    swing,
+    thrust,
+    none, // used for ranged weapons
 };
 
 pub const WeaponRarity = enum(u3) {
@@ -51,6 +58,8 @@ pub const WeaponStats = struct {
     projectile_speed: f32,
     life_time: f32, // How long the projectile/hitbox lasts
     piercing: i32 = 1,
+    reach: f32 = 0, // Extra distance for thrust attacks
+    animation_type: AttackAnimationType = .none,
 };
 
 pub const WeaponSprite = struct {
@@ -73,7 +82,7 @@ pub const Weapon = struct {
     origin: rl.Vector2 = .{ .x = 0, .y = 0 },
 
     pub fn generateRandomWeapon(random: std.Random) Weapon {
-        const wt_int = random.intRangeLessThan(u8, 0, 3);
+        const wt_int = random.intRangeLessThan(u8, 0, 4);
         const w_type: WeaponType = @enumFromInt(wt_int);
 
         // Weighted rarity:
@@ -96,12 +105,18 @@ pub const Weapon = struct {
         switch (w_type) {
             .sword => {
                 const base_dmg: f32 = 15.0 + random.float(f32) * 10.0;
+
+                // Randomly choose swing or thrust for swords
+                const anim_type: AttackAnimationType = if (random.boolean()) .swing else .thrust;
+
                 stats = .{
                     .damage = @intFromFloat(base_dmg * mult),
                     .attack_speed = (1.5 + random.float(f32) * 1.0) * (1.0 + (mult - 1.0) * 0.2),
                     .projectile_speed = 0.0, // Melee
                     .life_time = 0.15, // short hitbox lifetime
                     .piercing = 999, // Swords hit everything in range
+                    .reach = if (anim_type == .thrust) 40.0 + random.float(f32) * 20.0 else 0.0,
+                    .animation_type = anim_type,
                 };
             },
             .bow => {
@@ -122,6 +137,19 @@ pub const Weapon = struct {
                     .projectile_speed = 400.0 + random.float(f32) * 100.0,
                     .life_time = 3.0,
                     .piercing = if (rarity == .legendary) 3 else 1,
+                };
+            },
+            .spear => {
+                const base_dmg: f32 = 12.0 + random.float(f32) * 8.0;
+
+                stats = .{
+                    .damage = @intFromFloat(base_dmg * mult),
+                    .attack_speed = (1.2 + random.float(f32) * 0.8) * (1.0 + (mult - 1.0) * 0.2),
+                    .projectile_speed = 0.0, // Melee
+                    .life_time = 0.20, // longer hitbox lifetime
+                    .piercing = 999, // Spears hit everything in range
+                    .reach = 80.0 + random.float(f32) * 40.0, // Long reach
+                    .animation_type = .thrust,
                 };
             },
         }

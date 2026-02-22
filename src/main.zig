@@ -31,17 +31,64 @@ const Input = struct {
     jump: bool = false,
 };
 
-fn updateWeaponAim(player: *Entity, weapon: *Weapon, mouse_pos: rl.Vector2) void {
-    const dir_x = mouse_pos.x - player.pos.x;
-    const dir_y = mouse_pos.y - player.pos.y;
+const AttackState = struct {
+    is_attacking: bool = false,
+    timer: f32 = 0,
+    duration: f32 = 0,
+    start_angle: f32 = 0,
+    target_angle: f32 = 0,
+    base_angle: f32 = 0, // angle to mouse when attack started
+};
 
-    const angle_rad = std.math.atan2(dir_y, dir_x);
-    weapon.rotation_angle = angle_rad * (180.0 / std.math.pi);
+fn updateWeaponAim(player: *Entity, weapon: *Weapon, state: *AttackState, mouse_pos: rl.Vector2) void {
+    const player_anim = player.animation;
+    const player_width = @as(f32, @floatFromInt(player_anim.sprite.texture.width)) /
+        @as(f32, @floatFromInt(player_anim.sprite.data.frames)) * player_anim.data.scale.x;
+    const player_height = @as(f32, @floatFromInt(player_anim.sprite.texture.height)) * player_anim.data.scale.y;
 
-    const distance: f32 = 50.0;
+    const player_center_x = player.pos.x + player_width * 0.5;
+    const player_center_y = player.pos.y + player_height * 0.5;
 
-    weapon.offset.x = @cos(angle_rad) * distance;
-    weapon.offset.y = @sin(angle_rad) * distance;
+    const dir_x = mouse_pos.x - player_center_x;
+    const dir_y = mouse_pos.y - player_center_y;
+
+    if (!state.is_attacking) {
+        const angle_rad = std.math.atan2(dir_y, dir_x);
+        weapon.rotation_angle = angle_rad * (180.0 / std.math.pi);
+
+        const distance: f32 = 60.0; // orbiting distance from center
+
+        weapon.offset.x = @cos(angle_rad) * distance;
+        weapon.offset.y = @sin(angle_rad) * distance;
+    } else {
+        const progress = state.timer / state.duration; // 0.0 to 1.0 (actually going backwards 1.0 -> 0.0, so we do 1.0 - progress)
+        const t = 1.0 - progress;
+
+        // Simple ease-out cubic
+        const ease_t = 1.0 - std.math.pow(f32, 1.0 - t, 3.0);
+
+        if (weapon.stats.animation_type == .swing) {
+            weapon.rotation_angle = state.start_angle + (state.target_angle - state.start_angle) * ease_t;
+
+            const distance: f32 = 60.0;
+            const angle_rad = weapon.rotation_angle * (std.math.pi / 180.0);
+            weapon.offset.x = @cos(angle_rad) * distance;
+            weapon.offset.y = @sin(angle_rad) * distance;
+        } else if (weapon.stats.animation_type == .thrust) {
+            weapon.rotation_angle = state.base_angle;
+
+            // Thrust distance: goes out and comes back
+            // peak at t = 0.5
+            const dist_t = if (t < 0.5) t * 2.0 else (1.0 - t) * 2.0;
+            const ease_dist = 1.0 - std.math.pow(f32, 1.0 - dist_t, 2.0); // ease-out
+
+            const distance: f32 = 60.0 + weapon.stats.reach * ease_dist;
+
+            const angle_rad = weapon.rotation_angle * (std.math.pi / 180.0);
+            weapon.offset.x = @cos(angle_rad) * distance;
+            weapon.offset.y = @sin(angle_rad) * distance;
+        }
+    }
 }
 
 fn canJump(p: Player, jumps_taken: u8) bool {
@@ -82,7 +129,7 @@ fn drawWeapon(weapon: Weapon, player: Entity) void {
             .height = @as(f32, @floatFromInt(weapon_sprite.height)) * ANIMATION_SCALE.y,
         },
         weapon.origin,
-        weapon.rotation_angle,
+        weapon.rotation_angle + 90.0,
         weapon.rarity.getColor(),
     );
 }
@@ -106,12 +153,14 @@ pub fn main() void {
     var prng = std.Random.DefaultPrng.init(@bitCast(std.time.milliTimestamp()));
     const random = prng.random();
 
+    const base_weapon_tex = rl.loadTexture("res/images/sword.png") catch std.mem.zeroes(rl.Texture2D);
+
     var weapon = Weapon.generateRandomWeapon(random);
-    weapon.sprite.texture = rl.loadTexture("res/images/sword.png") catch std.mem.zeroes(rl.Texture2D);
-    // Adjust visual origin or offset based on your sprite setup
+    weapon.sprite.texture = base_weapon_tex;
+    // Set origin to bottom center of the weapon passing its actual height
     weapon.origin = .{
-        .x = @as(f32, @floatFromInt(weapon.sprite.texture.width)) * 0.5,
-        .y = 64,
+        .x = @as(f32, @floatFromInt(base_weapon_tex.width)) * 0.5,
+        .y = @as(f32, @floatFromInt(base_weapon_tex.height)),
     };
 
     for (0..20) |_| {
@@ -133,6 +182,7 @@ pub fn main() void {
     var player_dead: bool = false;
     var jumps: u8 = 0;
     var attack_timer: f32 = 0;
+    var attack_state: AttackState = .{};
 
     // Debug text buffer
     var buf: [256]u8 = undefined;
@@ -174,17 +224,56 @@ pub fn main() void {
             attack_timer -= delta_t;
         }
 
+        if (attack_state.is_attacking) {
+            attack_state.timer -= delta_t;
+            if (attack_state.timer <= 0) {
+                attack_state.is_attacking = false;
+            }
+        }
+
         if (rl.isKeyPressed(.e)) {
             weapon = Weapon.generateRandomWeapon(random);
-            weapon.sprite.texture = rl.loadTexture("res/images/sword.png") catch std.mem.zeroes(rl.Texture2D);
+            weapon.sprite.texture = base_weapon_tex;
             weapon.origin = .{
-                .x = @as(f32, @floatFromInt(weapon.sprite.texture.width)) * 0.5,
-                .y = 64,
+                .x = @as(f32, @floatFromInt(base_weapon_tex.width)) * 0.5,
+                .y = @as(f32, @floatFromInt(base_weapon_tex.height)),
             };
         }
 
         if (rl.isMouseButtonDown(.left) and attack_timer <= 0 and !player_dead) {
             attack_timer = 1.0 / weapon.stats.attack_speed;
+
+            if (weapon.stats.animation_type != .none) {
+                attack_state.is_attacking = true;
+                attack_state.duration = weapon.stats.life_time;
+                attack_state.timer = attack_state.duration;
+
+                const player_width = @as(f32, @floatFromInt(player_entity.animation.sprite.texture.width)) /
+                    @as(f32, @floatFromInt(player_entity.animation.sprite.data.frames)) * player_entity.animation.data.scale.x;
+                const player_height = @as(f32, @floatFromInt(player_entity.animation.sprite.texture.height)) * player_entity.animation.data.scale.y;
+
+                const player_center_x = player_entity.pos.x + player_width * 0.5;
+                const player_center_y = player_entity.pos.y + player_height * 0.5;
+
+                const mouse_pos = rl.getMousePosition();
+                const dir_x = mouse_pos.x - player_center_x;
+                const dir_y = mouse_pos.y - player_center_y;
+
+                const angle_rad = std.math.atan2(dir_y, dir_x);
+                attack_state.base_angle = angle_rad * (180.0 / std.math.pi);
+
+                if (weapon.stats.animation_type == .swing) {
+                    // Swing from -60 to +60 degrees
+                    attack_state.start_angle = attack_state.base_angle - 60.0;
+                    attack_state.target_angle = attack_state.base_angle + 60.0;
+
+                    // Flip swing direction if player is facing left
+                    if (mouse_pos.x < player_center_x) {
+                        attack_state.start_angle = attack_state.base_angle + 60.0;
+                        attack_state.target_angle = attack_state.base_angle - 60.0;
+                    }
+                }
+            }
 
             const player_width = @as(f32, @floatFromInt(player_entity.animation.sprite.texture.width)) /
                 @as(f32, @floatFromInt(player_entity.animation.sprite.data.frames)) * player_entity.animation.data.scale.x;
@@ -203,13 +292,19 @@ pub fn main() void {
                 .life_time = weapon.stats.life_time,
                 .pierce_count = weapon.stats.piercing,
                 .shooter_id = player_entity.handle.id,
-                .is_melee = (weapon.weapon_type == .sword),
+                .is_melee = (weapon.weapon_type == .sword or weapon.weapon_type == .spear),
                 .color = weapon.rarity.getColor(),
             } });
 
             proj.pos = spawn_pos;
             proj.vel = .{ .x = dir.x * weapon.stats.projectile_speed, .y = dir.y * weapon.stats.projectile_speed };
-            proj.radius = if (weapon.weapon_type == .sword) 30.0 else 10.0;
+            if (weapon.weapon_type == .sword) {
+                proj.radius = 35.0;
+            } else if (weapon.weapon_type == .spear) {
+                proj.radius = 20.0;
+            } else {
+                proj.radius = 10.0;
+            }
         }
 
         // Projectile update and collision
@@ -291,7 +386,7 @@ pub fn main() void {
             jumps = 0;
         }
 
-        updateWeaponAim(player_entity, &weapon, rl.getMousePosition());
+        updateWeaponAim(player_entity, &weapon, &attack_state, rl.getMousePosition());
         _ = animation_mod.updateAnimation(&player_entity.animation, delta_t);
 
         rl.beginDrawing();
