@@ -14,11 +14,36 @@ pub const EntityHandle = struct {
     id: i32 = 0,
 };
 
+pub const Projectile = struct {
+    damage: i32 = 0,
+    life_time: f32 = 0,
+    pierce_count: i32 = 1,
+    hit_entities: [16]i32 = [_]i32{0} ** 16,
+    num_hits: usize = 0,
+    shooter_id: i32 = 0,
+    is_melee: bool = false,
+    color: rl.Color = rl.Color.white,
+
+    pub fn hasHit(self: Projectile, id: i32) bool {
+        for (self.hit_entities[0..self.num_hits]) |hit_id| {
+            if (hit_id == id) return true;
+        }
+        return false;
+    }
+    pub fn addHit(self: *Projectile, id: i32) void {
+        if (self.num_hits < 16) {
+            self.hit_entities[self.num_hits] = id;
+            self.num_hits += 1;
+        }
+    }
+};
+
 pub const EntityKind = union(enum) {
     none,
     player: Player,
     skeleton: Skeleton,
     bat: Bat,
+    projectile: Projectile,
 };
 
 pub const Player = struct {
@@ -34,6 +59,7 @@ pub const Entity = struct {
     hp: i32 = 0,
     pos: rl.Vector2 = .{ .x = 0, .y = 0 },
     vel: rl.Vector2 = .{ .x = 0, .y = 0 },
+    radius: f32 = 15.0,
     flip_x: bool = false,
 
     kind: EntityKind = .none,

@@ -5,6 +5,7 @@ const rl = @import("raylib");
 pub const entity = @import("entity.zig");
 pub const animation_mod = @import("animation.zig");
 pub const enemy_mod = @import("enemy.zig");
+pub const weapon_mod = @import("weapon.zig");
 
 const Entity = entity.Entity;
 const EntityHandle = entity.EntityHandle;
@@ -13,6 +14,7 @@ const Player = entity.Player;
 const Skeleton = enemy_mod.Skeleton;
 const Animation = animation_mod.Animation;
 const ANIMATION_SCALE = animation_mod.ANIMATION_SCALE;
+const Weapon = weapon_mod.Weapon;
 
 const WINDOW_WIDTH: i32 = 1280;
 const WINDOW_HEIGHT: i32 = 720;
@@ -27,17 +29,6 @@ const Input = struct {
     move_left: bool = false,
     move_right: bool = false,
     jump: bool = false,
-};
-
-const WeaponSprite = struct {
-    texture: rl.Texture2D = std.mem.zeroes(rl.Texture2D),
-};
-
-const Weapon = struct {
-    sprite: WeaponSprite = .{},
-    rotation_angle: f32 = 0,
-    offset: rl.Vector2 = .{ .x = 0, .y = 0 },
-    origin: rl.Vector2 = .{ .x = 0, .y = 0 },
 };
 
 fn updateWeaponAim(player: *Entity, weapon: *Weapon, mouse_pos: rl.Vector2) void {
@@ -92,7 +83,7 @@ fn drawWeapon(weapon: Weapon, player: Entity) void {
         },
         weapon.origin,
         weapon.rotation_angle,
-        rl.Color.white,
+        weapon.rarity.getColor(),
     );
 }
 
@@ -112,21 +103,28 @@ pub fn main() void {
     const player_entity = state.createEntity(.{ .player = .{ .jump_force = JUMP_FORCE } });
     player_entity.pos = .{ .x = @as(f32, @floatFromInt(WINDOW_WIDTH)) / 2.0, .y = @as(f32, @floatFromInt(WINDOW_HEIGHT)) / 2.0 };
 
-    var weapon = Weapon{};
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.time.milliTimestamp()));
+    const random = prng.random();
+
+    var weapon = Weapon.generateRandomWeapon(random);
     weapon.sprite.texture = rl.loadTexture("res/images/sword.png") catch std.mem.zeroes(rl.Texture2D);
+    // Adjust visual origin or offset based on your sprite setup
     weapon.origin = .{
         .x = @as(f32, @floatFromInt(weapon.sprite.texture.width)) * 0.5,
         .y = 64,
     };
 
-    // Spawn some random enemies
-    var prng = std.Random.DefaultPrng.init(@bitCast(std.time.milliTimestamp()));
-    const random = prng.random();
-    for (0..10) |_| {
+    for (0..20) |_| {
         const r = random.float(f32);
         if (r > 0.5) continue;
         const bones: i32 = @intCast(random.intRangeAtMost(u32, 1, 10));
-        _ = state.createEntity(.{ .skeleton = .{ .bones = bones } });
+        const e = state.createEntity(.{ .skeleton = .{ .bones = bones } });
+        e.hp = 50 + @as(i32, @intCast(bones)) * 5;
+        e.pos = .{
+            .x = random.float(f32) * @as(f32, @floatFromInt(WINDOW_WIDTH)),
+            .y = @as(f32, @floatFromInt(WINDOW_HEIGHT)) - 96.0,
+        };
+        e.radius = 20.0;
     }
 
     const player = player_entity.as(Player) orelse unreachable;
@@ -134,6 +132,7 @@ pub fn main() void {
     var delta_t: f32 = 0;
     var player_dead: bool = false;
     var jumps: u8 = 0;
+    var attack_timer: f32 = 0;
 
     // Debug text buffer
     var buf: [256]u8 = undefined;
@@ -171,6 +170,109 @@ pub fn main() void {
             player_entity.vel.x = 0.0;
         }
 
+        if (attack_timer > 0) {
+            attack_timer -= delta_t;
+        }
+
+        if (rl.isKeyPressed(.e)) {
+            weapon = Weapon.generateRandomWeapon(random);
+            weapon.sprite.texture = rl.loadTexture("res/images/sword.png") catch std.mem.zeroes(rl.Texture2D);
+            weapon.origin = .{
+                .x = @as(f32, @floatFromInt(weapon.sprite.texture.width)) * 0.5,
+                .y = 64,
+            };
+        }
+
+        if (rl.isMouseButtonDown(.left) and attack_timer <= 0 and !player_dead) {
+            attack_timer = 1.0 / weapon.stats.attack_speed;
+
+            const player_width = @as(f32, @floatFromInt(player_entity.animation.sprite.texture.width)) /
+                @as(f32, @floatFromInt(player_entity.animation.sprite.data.frames)) * player_entity.animation.data.scale.x;
+            const player_height = @as(f32, @floatFromInt(player_entity.animation.sprite.texture.height)) * player_entity.animation.data.scale.y;
+
+            const spawn_pos = rl.Vector2{
+                .x = player_entity.pos.x + player_width * 0.5 + weapon.offset.x,
+                .y = player_entity.pos.y + player_height * 0.5 + weapon.offset.y,
+            };
+
+            const rad = weapon.rotation_angle * (std.math.pi / 180.0);
+            const dir = rl.Vector2{ .x = @cos(rad), .y = @sin(rad) };
+
+            var proj = state.createEntity(.{ .projectile = .{
+                .damage = weapon.stats.damage,
+                .life_time = weapon.stats.life_time,
+                .pierce_count = weapon.stats.piercing,
+                .shooter_id = player_entity.handle.id,
+                .is_melee = (weapon.weapon_type == .sword),
+                .color = weapon.rarity.getColor(),
+            } });
+
+            proj.pos = spawn_pos;
+            proj.vel = .{ .x = dir.x * weapon.stats.projectile_speed, .y = dir.y * weapon.stats.projectile_speed };
+            proj.radius = if (weapon.weapon_type == .sword) 30.0 else 10.0;
+        }
+
+        // Projectile update and collision
+        const active_ents = state.getAllEntities(arena.allocator());
+        for (active_ents) |handle| {
+            if (state.entityFromHandle(handle)) |e| {
+                if (e.as(entity.Projectile)) |proj| {
+                    if (proj.life_time <= 0) {
+                        state.destroyEntity(e);
+                        continue;
+                    }
+
+                    if (!proj.is_melee) {
+                        e.pos.x += e.vel.x * delta_t;
+                        e.pos.y += e.vel.y * delta_t;
+                    } else {
+                        // Melee hitbox follows weapon
+                        const player_width = @as(f32, @floatFromInt(player_entity.animation.sprite.texture.width)) /
+                            @as(f32, @floatFromInt(player_entity.animation.sprite.data.frames)) * player_entity.animation.data.scale.x;
+                        const player_height = @as(f32, @floatFromInt(player_entity.animation.sprite.texture.height)) * player_entity.animation.data.scale.y;
+                        e.pos = .{
+                            .x = player_entity.pos.x + player_width * 0.5 + weapon.offset.x,
+                            .y = player_entity.pos.y + player_height * 0.5 + weapon.offset.y,
+                        };
+                    }
+
+                    proj.life_time -= delta_t;
+
+                    // Collision checking
+                    for (active_ents) |other_handle| {
+                        if (handle.id == other_handle.id) continue;
+                        if (state.entityFromHandle(other_handle)) |other| {
+                            if (other.handle.id == proj.shooter_id) continue;
+                            if (other.kind == .projectile) continue;
+                            if (other.hp <= 0 and other.kind != .player) continue;
+
+                            // Check distance
+                            const dx = e.pos.x - other.pos.x;
+                            const dy = e.pos.y - other.pos.y;
+                            const dist_sq = dx * dx + dy * dy;
+                            const rad_sum = e.radius + other.radius;
+
+                            if (dist_sq <= rad_sum * rad_sum) {
+                                if (!proj.hasHit(other.handle.id)) {
+                                    proj.addHit(other.handle.id);
+                                    other.hp -= proj.damage;
+                                    proj.pierce_count -= 1;
+
+                                    if (other.hp <= 0 and other.kind != .player) {
+                                        state.destroyEntity(other);
+                                    }
+
+                                    if (proj.pierce_count <= 0) {
+                                        proj.life_time = 0; // destroy projectile
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         player_entity.vel.y += GRAVITY * delta_t;
 
         if (input.jump and canJump(player.*, jumps)) {
@@ -198,6 +300,28 @@ pub fn main() void {
         animation_mod.drawAnimation(player_entity.animation, player_entity.pos, player_entity.flip_x);
         drawWeapon(weapon, player_entity.*);
 
+        // Draw projectiles and enemies
+        for (state.getAllEntities(arena.allocator())) |handle| {
+            if (state.entityFromHandle(handle)) |e| {
+                if (e.as(entity.Projectile)) |proj| {
+                    if (proj.is_melee) {
+                        // Debug draw melee hitbox
+                        // rl.drawCircleLines(@intFromFloat(e.pos.x), @intFromFloat(e.pos.y), e.radius, rl.colorAlpha(proj.color, 0.5));
+                    } else {
+                        rl.drawCircle(@intFromFloat(e.pos.x), @intFromFloat(e.pos.y), e.radius, proj.color);
+                    }
+                }
+
+                if (e.kind == .skeleton) {
+                    rl.drawRectangle(@intFromFloat(e.pos.x - 15), @intFromFloat(e.pos.y - 30), 30, 40, rl.Color.gray);
+                    const hp_ratio = std.math.clamp(@as(f32, @floatFromInt(e.hp)) / 100.0, 0.0, 1.0);
+                    if (hp_ratio > 0) {
+                        rl.drawRectangle(@intFromFloat(e.pos.x - 15), @intFromFloat(e.pos.y - 40), @intFromFloat(30.0 * hp_ratio), 5, rl.Color.red);
+                    }
+                }
+            }
+        }
+
         if (player_dead) {
             rl.drawText("You are Dead", @divTrunc(WINDOW_WIDTH, 2) - 200, @divTrunc(WINDOW_HEIGHT, 2), 50, rl.Color.black);
         }
@@ -216,6 +340,9 @@ pub fn main() void {
 
         const ents_text = std.fmt.bufPrintZ(&buf, "ents: {d}", .{ents.len}) catch "???";
         rl.drawText(ents_text, 10, 70, 20, rl.Color.black);
+
+        const weapon_text = std.fmt.bufPrintZ(&buf, "Weapon: {s} {s}\nDmg: {d} SPD: {d:.2}", .{ weapon.rarity.getName(), @tagName(weapon.weapon_type), weapon.stats.damage, weapon.stats.attack_speed }) catch "???";
+        rl.drawText(weapon_text, 10, WINDOW_HEIGHT - 60, 20, weapon.rarity.getColor());
 
         rl.drawFPS(WINDOW_WIDTH - 100, 10);
 
@@ -238,4 +365,5 @@ test {
     _ = entity;
     _ = animation_mod;
     _ = enemy_mod;
+    _ = weapon_mod;
 }
